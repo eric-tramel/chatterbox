@@ -103,7 +103,12 @@ class T3(nn.Module):
         len_cond = cond_emb.size(1)
 
         if cond_emb.size(0) != text_emb.size(0):
-             cond_emb = cond_emb.expand(text_emb.size(0), -1, -1)
+            if text_emb.size(0) % cond_emb.size(0) != 0:
+                raise ValueError(
+                    f"Conditioning batch ({cond_emb.size(0)}) must divide text batch ({text_emb.size(0)})"
+                )
+            repeat_factor = text_emb.size(0) // cond_emb.size(0)
+            cond_emb = cond_emb.repeat_interleave(repeat_factor, dim=0)
 
         # concat
         embeds = torch.stack([
