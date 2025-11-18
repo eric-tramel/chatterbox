@@ -89,6 +89,34 @@ class Conditionals:
                 self.gen[k] = v.to(device=device)
         return self
 
+    def expand_for_batch(self, batch_size: int) -> tuple[T3Cond, dict]:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if batch_size == 1:
+            return self.t3, self.gen
+
+        def _expand_tensor(t: torch.Tensor) -> torch.Tensor:
+            if t.dim() == 0:
+                return t
+            target_shape = (batch_size, *t.shape[1:])
+            return t.expand(*target_shape)
+
+        t3_kwargs = {}
+        for field, value in self.t3.__dict__.items():
+            if torch.is_tensor(value):
+                t3_kwargs[field] = _expand_tensor(value)
+            else:
+                t3_kwargs[field] = value
+
+        expanded_gen = {}
+        for key, value in self.gen.items():
+            if torch.is_tensor(value):
+                expanded_gen[key] = _expand_tensor(value)
+            else:
+                expanded_gen[key] = value
+
+        return T3Cond(**t3_kwargs), expanded_gen
+
     def save(self, fpath: Path):
         arg_dict = dict(
             t3=self.t3.__dict__,
@@ -245,9 +273,11 @@ class ChatterboxTTS:
         self._ensure_conditionals(audio_prompt_path, exaggeration)
 
         text_tokens = self._build_text_batch(texts=texts)
+        batch_size = text_tokens.size(0)
+        t3_cond_batch, gen_cond_batch = self.conds.expand_for_batch(batch_size)
         with torch.inference_mode():
             speech_tokens = self.t3.inference(
-                t3_cond=self.conds.t3,
+                t3_cond=t3_cond_batch,
                 text_tokens=text_tokens,
                 max_new_tokens=1000,
                 temperature=temperature,
@@ -260,7 +290,7 @@ class ChatterboxTTS:
         speech_tokens, speech_lens = self._prepare_speech_batch(speech_tokens)
         wav_batch, _ = self.s3gen.inference(
             speech_tokens=speech_tokens,
-            ref_dict=self.conds.gen,
+            ref_dict=gen_cond_batch,
             speech_token_lens=speech_lens,
         )
         wav_batch = wav_batch.detach().cpu()
