@@ -5,7 +5,6 @@ import os
 
 import librosa
 import torch
-import perth
 import torch.nn.functional as F
 from safetensors.torch import load_file as load_safetensors
 from huggingface_hub import snapshot_download
@@ -152,7 +151,7 @@ class ChatterboxMultilingualTTS:
         self.tokenizer = tokenizer
         self.device = device
         self.conds = conds
-        self.watermarker = perth.PerthImplicitWatermarker()
+        #self.watermarker = perth.PerthImplicitWatermarker()
 
     @classmethod
     def get_supported_languages(cls):
@@ -314,7 +313,7 @@ class ChatterboxMultilingualTTS:
         results = []
         for i in range(wav_batch.size(0)):
             wav = wav_batch[i].squeeze(0).numpy()
-            wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
+            #wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
             results.append(torch.from_numpy(wav).unsqueeze(0))
         return results
 
