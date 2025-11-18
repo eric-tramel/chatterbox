@@ -299,20 +299,28 @@ class ChatterboxTTS:
         batch = F.pad(batch, (0, 1), value=eot)
         return batch
 
-    def _prepare_speech_batch(self, speech_tokens: torch.Tensor) -> tuple[torch.Tensor, torch.LongTensor]:
+    def _prepare_speech_batch(
+        self, speech_tokens: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.LongTensor]:
         trimmed = []
         lengths = []
         for seq in speech_tokens:
             seq = drop_invalid_tokens(seq)
             seq = seq[seq < _MAX_SPEECH_TOKEN_ID]
-            trimmed.append(seq)
+            if seq.numel() == 0:
+                seq = torch.tensor(
+                    [self.t3.hp.start_speech_token], dtype=torch.long, device=self.device
+                )
+            trimmed.append(seq.to(self.device))
             lengths.append(seq.size(0))
 
         max_len = max(lengths)
-        pad_value = self.t3.hp.stop_speech_token
-        batch = torch.full((len(trimmed), max_len), pad_value, dtype=torch.long, device=self.device)
+        pad_value = 0
+        batch = torch.full(
+            (len(trimmed), max_len), pad_value, dtype=torch.long, device=self.device
+        )
         for idx, seq in enumerate(trimmed):
-            batch[idx, : seq.size(0)] = seq.to(self.device)
+            batch[idx, : seq.size(0)] = seq
 
         lens_tensor = torch.tensor(lengths, dtype=torch.long, device=self.device)
         return batch, lens_tensor
