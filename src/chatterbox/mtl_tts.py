@@ -325,7 +325,7 @@ class ChatterboxMultilingualTTS:
             normalized_languages.append(lang_lower)
 
         self._ensure_conditionals(audio_prompt_path, exaggeration)
-        text_tokens = self._build_text_batch(texts, normalized_languages)
+        text_tokens, text_token_lens = self._build_text_batch(texts, normalized_languages)
         batch_size = text_tokens.size(0)
         t3_cond_batch, gen_cond_batch = self.conds.expand_for_batch(batch_size)
 
@@ -333,6 +333,7 @@ class ChatterboxMultilingualTTS:
             speech_tokens = self.t3.inference(
                 t3_cond=t3_cond_batch,
                 text_tokens=text_tokens,
+                text_token_lens=text_token_lens,
                 max_new_tokens=1000,
                 temperature=temperature,
                 cfg_weight=cfg_weight,
@@ -404,7 +405,13 @@ class ChatterboxMultilingualTTS:
         eot = self.t3.hp.stop_text_token
         batch = F.pad(batch, (1, 0), value=sot)
         batch = F.pad(batch, (0, 1), value=eot)
-        return batch
+
+        lengths = torch.tensor(
+            [tok.size(0) + 2 for tok in processed],  # +2 accounts for SOT/EOT
+            dtype=torch.long,
+            device=self.device,
+        )
+        return batch, lengths
 
     def _prepare_speech_batch(
         self, speech_tokens: torch.Tensor

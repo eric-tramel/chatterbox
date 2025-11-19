@@ -216,6 +216,7 @@ class T3(nn.Module):
         *,
         t3_cond: T3Cond,
         text_tokens: Tensor,
+        text_token_lens: Optional[Tensor] = None,
         initial_speech_tokens: Optional[Tensor] = None,
 
         # misc conditioning
@@ -241,6 +242,23 @@ class T3(nn.Module):
         _ensure_BOT_EOT(text_tokens, self.hp)
         text_tokens = torch.atleast_2d(text_tokens).to(dtype=torch.long, device=self.device)
         base_batch = text_tokens.size(0)
+        if text_token_lens is None:
+            text_token_lens = torch.full(
+                (base_batch,),
+                text_tokens.size(-1),
+                dtype=torch.long,
+                device=self.device,
+            )
+        else:
+            text_token_lens = torch.atleast_1d(text_token_lens).to(
+                dtype=torch.long,
+                device=self.device,
+            )
+            if text_token_lens.size(0) != base_batch:
+                raise ValueError(
+                    f"text_token_lens batch ({text_token_lens.size(0)}) must match text_tokens batch ({base_batch})"
+                )
+        text_lengths = text_token_lens.tolist()
         cfg_enabled = cfg_weight > 0.0
 
         def _cfg_repeat(tensor: torch.Tensor) -> torch.Tensor:
@@ -273,15 +291,15 @@ class T3(nn.Module):
         if not self.compiled:
             alignment_stream_analyzer = None
             if self.hp.is_multilingual:
-                text_slice = (len_cond, len_cond + model_text_tokens.size(-1))
+                text_slice = lambda tl: (len_cond, len_cond + int(tl))
                 repeats = 2 if cfg_enabled else 1
                 analyzers: List[AlignmentStreamAnalyzer] = []
-                for batch_idx in range(base_batch):
+                for batch_idx, text_len in enumerate(text_lengths):
                     hf_batch_idx = batch_idx * repeats
                     analyzer = AlignmentStreamAnalyzer(
                         self.tfmr,
                         None,
-                        text_tokens_slice=text_slice,
+                        text_tokens_slice=text_slice(text_len),
                         alignment_layer_idx=9,
                         eos_idx=self.hp.stop_speech_token,
                         batch_index=hf_batch_idx,
