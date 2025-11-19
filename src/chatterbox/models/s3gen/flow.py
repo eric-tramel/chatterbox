@@ -289,11 +289,8 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
 
-        # h_masks is already (B, 1, T) and boolean (True for valid)
-        # The decoder expects mask.unsqueeze(1) to be (B, 1, T).
-        # So we need to provide (B, T) to the decoder call below, OR modify the call.
-        # Let's squeeze it to (B, T).
-        mask = h_masks.squeeze(1)
+        # h_masks is already (B, 1, T) and boolean (True for valid positions)
+        mask = h_masks.squeeze(1).to(torch.bool)
         feat, _ = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),
@@ -304,10 +301,9 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         feat = feat[:, :, mel_len1:]
         assert feat.shape[2] == mel_len2
         
-        # Calculate valid mel lengths for each item in the batch
-        # token_len is the length of the generated tokens (before concatenation with prompt)
-        # valid_mel_lens = (token_len / 25 * (22050/256))
-        # Using the same logic as mel_len2 calculation
-        valid_mel_lens = (token_len.float() / self.input_frame_rate * 22050 / 256).long()
+        # Calculate valid mel lengths for each item in the batch using the decoder mask
+        # Only count the portion corresponding to generated speech (after the prompt).
+        gen_mask = mask[:, mel_len1:]
+        valid_mel_lens = gen_mask.sum(dim=1).long()
         
         return feat.float(), valid_mel_lens

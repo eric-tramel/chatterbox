@@ -17,6 +17,8 @@ class ChatterboxVC:
     ENC_COND_LEN = 6 * S3_SR
     DEC_COND_LEN = 10 * S3GEN_SR
     _SAMPLES_PER_SPEECH_TOKEN = int(round(S3GEN_SR / S3_TOKEN_RATE))
+    _TOKEN_TO_MEL_RATIO = 2
+    _SAMPLES_PER_MEL_FRAME = int(round(_SAMPLES_PER_SPEECH_TOKEN / _TOKEN_TO_MEL_RATIO))
 
     def __init__(
         self,
@@ -96,13 +98,13 @@ class ChatterboxVC:
             audio_16 = torch.from_numpy(audio_16).float().to(self.device)[None, ]
 
             s3_tokens, s3_token_lens = self.s3gen.tokenizer(audio_16)
-            wav, _ = self.s3gen.inference(
+            wav, mel_lens = self.s3gen.inference(
                 speech_tokens=s3_tokens,
                 ref_dict=self.ref_dict,
                 speech_token_lens=s3_token_lens,
             )
             wav = wav.squeeze(0).detach().cpu()
-            valid_samples = int(s3_token_lens[0].item() * self._SAMPLES_PER_SPEECH_TOKEN)
+            valid_samples = int(mel_lens[0].item() * self._SAMPLES_PER_MEL_FRAME)
             if valid_samples <= 0 or valid_samples > wav.size(-1):
                 valid_samples = wav.size(-1)
             wav = wav[:, :valid_samples].squeeze(0).numpy()

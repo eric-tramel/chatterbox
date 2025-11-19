@@ -19,6 +19,8 @@ from .models.t3.modules.cond_enc import T3Cond
 REPO_ID = "ResembleAI/chatterbox"
 _MAX_SPEECH_TOKEN_ID = 6561
 _SAMPLES_PER_SPEECH_TOKEN = int(round(S3GEN_SR / S3_TOKEN_RATE))
+_TOKEN_TO_MEL_RATIO = 2  # See `CausalMaskedDiffWithXvec.token_mel_ratio`
+_SAMPLES_PER_MEL_FRAME = int(round(_SAMPLES_PER_SPEECH_TOKEN / _TOKEN_TO_MEL_RATIO))
 
 
 def punc_norm(text: str) -> str:
@@ -295,20 +297,20 @@ class ChatterboxTTS:
             )
 
         speech_tokens, speech_lens = self._prepare_speech_batch(speech_tokens)
-        wav_batch, _ = self.s3gen.inference(
+        wav_batch, mel_lens = self.s3gen.inference(
             speech_tokens=speech_tokens,
             ref_dict=gen_cond_batch,
             speech_token_lens=speech_lens,
         )
         wav_batch = wav_batch.detach().cpu()
-        speech_lens = speech_lens.detach().cpu()
+        mel_lens = mel_lens.detach().cpu()
 
         trimmed = []
         for idx in range(wav_batch.size(0)):
             wav = wav_batch[idx]
             if wav.dim() == 1:
                 wav = wav.unsqueeze(0)
-            valid_samples = int(speech_lens[idx].item() * _SAMPLES_PER_SPEECH_TOKEN)
+            valid_samples = int(mel_lens[idx].item() * _SAMPLES_PER_MEL_FRAME)
             if valid_samples <= 0 or valid_samples > wav.size(-1):
                 valid_samples = wav.size(-1)
             trimmed.append(wav[:, :valid_samples])
