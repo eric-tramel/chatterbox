@@ -287,7 +287,10 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
 
-        mask = (~make_pad_mask(h_lengths)).to(h)
+        # Create mask that accounts for the full length of the concatenated sequence (h)
+        # mask needs to be (B, 1, T) for the decoder's attention.
+        # h_lengths includes both prompt and generated text parts.
+        mask = (~make_pad_mask(h_lengths, max_len=mel_len1 + mel_len2)).to(h)
         feat, _ = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),
