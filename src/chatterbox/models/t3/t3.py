@@ -344,7 +344,8 @@ class T3(nn.Module):
             if finished.any():
                 logits = logits.clone()
                 logits[finished] = float("-inf")
-                logits[finished, self.hp.stop_speech_token] = torch.finfo(logits.dtype).max
+                # Use a safe large value instead of max float to avoid Inf/NaN in softmax
+                logits[finished, self.hp.stop_speech_token] = 1e5
 
             if temperature != 1.0:
                 logits = logits / temperature
