@@ -1,7 +1,11 @@
 import logging
 import os
 import sys
+from pathlib import Path
+
 import torch
+import torchaudio
+
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
 # Configure logging
@@ -61,6 +65,14 @@ def test_batch_inference():
                      logger.warning(f"Waveform {i} has unexpected channel dim: {wav.shape[0]}")
         
         logger.info("SUCCESS: Batch inference logic executed without errors.")
+
+        # Stitch the batch into a single waveform for manual listening.
+        concatenated = torch.cat([wav.squeeze(0) for wav in wavs], dim=0).unsqueeze(0)
+        output_dir = Path("artifacts")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "batched_generation.wav"
+        torchaudio.save(str(output_path), concatenated, tts.sr)
+        logger.info(f"Saved concatenated waveform to {output_path.resolve()}")
 
     except Exception as e:
         logger.error("FAILED: Batch inference encountered an error.", exc_info=True)

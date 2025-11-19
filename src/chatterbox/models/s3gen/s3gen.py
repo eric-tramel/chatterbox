@@ -270,7 +270,7 @@ class S3Token2Wav(S3Token2Mel):
             # NOTE: ad-hoc method to reduce "spillover" from the reference clip.
             output_wavs[:, :len(self.trim_fade)] *= self.trim_fade
 
-        return output_wavs
+        return output_wavs, output_mel_lens
 
     @torch.inference_mode()
     def flow_inference(
@@ -313,7 +313,7 @@ class S3Token2Wav(S3Token2Mel):
         finalize: bool = True,
         speech_token_lens: Optional[torch.LongTensor] = None,
     ):
-        output_mels = self.flow_inference(
+        output_mels, output_mel_lens = self.flow_inference(
             speech_tokens,
             ref_wav=ref_wav,
             ref_sr=ref_sr,
@@ -326,4 +326,4 @@ class S3Token2Wav(S3Token2Mel):
         # NOTE: ad-hoc method to reduce "spillover" from the reference clip.
         output_wavs[:, :len(self.trim_fade)] *= self.trim_fade
 
-        return output_wavs, output_sources
+        return output_wavs, output_mel_lens

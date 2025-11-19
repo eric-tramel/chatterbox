@@ -11,7 +11,7 @@ from huggingface_hub import snapshot_download
 
 from .models.t3 import T3
 from .models.t3.modules.t3_config import T3Config
-from .models.s3tokenizer import S3_SR, drop_invalid_tokens
+from .models.s3tokenizer import S3_SR, S3_TOKEN_RATE, drop_invalid_tokens
 from .models.s3gen import S3GEN_SR, S3Gen
 from .models.tokenizers import MTLTokenizer
 from .models.voice_encoder import VoiceEncoder
@@ -20,6 +20,7 @@ from .models.t3.modules.cond_enc import T3Cond
 
 REPO_ID = "ResembleAI/chatterbox"
 _MAX_SPEECH_TOKEN_ID = 6561
+_SAMPLES_PER_SPEECH_TOKEN = int(round(S3GEN_SR / S3_TOKEN_RATE))
 
 # Supported languages for the multilingual model
 SUPPORTED_LANGUAGES = {
@@ -346,10 +347,15 @@ class ChatterboxMultilingualTTS:
         )
 
         wav_batch = wav_batch.detach().cpu()
+        speech_lens = speech_lens.detach().cpu()
         results = []
         for i in range(wav_batch.size(0)):
-            wav = wav_batch[i].squeeze(0).numpy()
-            results.append(torch.from_numpy(wav).unsqueeze(0))
+            wav = wav_batch[i]
+            valid_samples = int(speech_lens[i].item() * _SAMPLES_PER_SPEECH_TOKEN)
+            if valid_samples <= 0 or valid_samples > wav.size(-1):
+                valid_samples = wav.size(-1)
+            wav = wav[:, :valid_samples]
+            results.append(wav)
         return results
 
     def _ensure_conditionals(self, audio_prompt_path: str | None, exaggeration: float) -> None:

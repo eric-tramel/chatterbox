@@ -9,7 +9,7 @@ from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 
 from .models.t3 import T3
-from .models.s3tokenizer import S3_SR, drop_invalid_tokens
+from .models.s3tokenizer import S3_SR, S3_TOKEN_RATE, drop_invalid_tokens
 from .models.s3gen import S3GEN_SR, S3Gen
 from .models.tokenizers import EnTokenizer
 from .models.voice_encoder import VoiceEncoder
@@ -18,6 +18,7 @@ from .models.t3.modules.cond_enc import T3Cond
 
 REPO_ID = "ResembleAI/chatterbox"
 _MAX_SPEECH_TOKEN_ID = 6561
+_SAMPLES_PER_SPEECH_TOKEN = int(round(S3GEN_SR / S3_TOKEN_RATE))
 
 
 def punc_norm(text: str) -> str:
@@ -300,7 +301,16 @@ class ChatterboxTTS:
             speech_token_lens=speech_lens,
         )
         wav_batch = wav_batch.detach().cpu()
-        return [wav_batch[i] for i in range(wav_batch.size(0))]
+        speech_lens = speech_lens.detach().cpu()
+
+        trimmed = []
+        for idx in range(wav_batch.size(0)):
+            wav = wav_batch[idx]
+            valid_samples = int(speech_lens[idx].item() * _SAMPLES_PER_SPEECH_TOKEN)
+            if valid_samples <= 0 or valid_samples > wav.size(-1):
+                valid_samples = wav.size(-1)
+            trimmed.append(wav[:, :valid_samples])
+        return trimmed
 
     def _ensure_conditionals(self, audio_prompt_path: str | None, exaggeration: float) -> None:
         if audio_prompt_path:

@@ -6,7 +6,7 @@ import perth
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 
-from .models.s3tokenizer import S3_SR
+from .models.s3tokenizer import S3_SR, S3_TOKEN_RATE
 from .models.s3gen import S3GEN_SR, S3Gen
 
 
@@ -16,6 +16,7 @@ REPO_ID = "ResembleAI/chatterbox"
 class ChatterboxVC:
     ENC_COND_LEN = 6 * S3_SR
     DEC_COND_LEN = 10 * S3GEN_SR
+    _SAMPLES_PER_SPEECH_TOKEN = int(round(S3GEN_SR / S3_TOKEN_RATE))
 
     def __init__(
         self,
@@ -94,11 +95,16 @@ class ChatterboxVC:
             audio_16, _ = librosa.load(audio, sr=S3_SR)
             audio_16 = torch.from_numpy(audio_16).float().to(self.device)[None, ]
 
-            s3_tokens, _ = self.s3gen.tokenizer(audio_16)
+            s3_tokens, s3_token_lens = self.s3gen.tokenizer(audio_16)
             wav, _ = self.s3gen.inference(
                 speech_tokens=s3_tokens,
                 ref_dict=self.ref_dict,
+                speech_token_lens=s3_token_lens,
             )
-            wav = wav.squeeze(0).detach().cpu().numpy()
+            wav = wav.squeeze(0).detach().cpu()
+            valid_samples = int(s3_token_lens[0].item() * self._SAMPLES_PER_SPEECH_TOKEN)
+            if valid_samples <= 0 or valid_samples > wav.size(-1):
+                valid_samples = wav.size(-1)
+            wav = wav[:, :valid_samples].squeeze(0).numpy()
             watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
         return torch.from_numpy(watermarked_wav).unsqueeze(0)

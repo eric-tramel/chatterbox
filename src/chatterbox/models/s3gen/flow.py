@@ -303,4 +303,11 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         )
         feat = feat[:, :, mel_len1:]
         assert feat.shape[2] == mel_len2
-        return feat.float(), None  # NOTE jrm: why are they returning None here?
+        
+        # Calculate valid mel lengths for each item in the batch
+        # token_len is the length of the generated tokens (before concatenation with prompt)
+        # valid_mel_lens = (token_len / 25 * (22050/256))
+        # Using the same logic as mel_len2 calculation
+        valid_mel_lens = (token_len.float() / self.input_frame_rate * 22050 / 256).long()
+        
+        return feat.float(), valid_mel_lens
