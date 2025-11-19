@@ -308,7 +308,14 @@ class ChatterboxTTS:
         else:
             assert self.conds is not None, "Please `prepare_conditionals` first or specify `audio_prompt_path`"
 
-        if exaggeration != self.conds.t3.emotion_adv[0, 0, 0]:
+        t3_cond = self.conds.t3
+        current_adv = t3_cond.emotion_adv
+        if torch.is_tensor(current_adv):
+            current = float(current_adv.flatten()[0].item())
+        else:
+            current = float(current_adv)
+
+        if exaggeration != current:
             _cond: T3Cond = self.conds.t3
             self.conds.t3 = T3Cond(
                 speaker_emb=_cond.speaker_emb,

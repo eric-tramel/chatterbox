@@ -261,7 +261,8 @@ class S3Token2Wav(S3Token2Mel):
         )
 
         # TODO jrm: ignoring the speed control (mel interpolation) and the HiFTGAN caching mechanisms for now.
-        hift_cache_source = torch.zeros(1, 1, 0).to(self.device)
+        B = speech_tokens.size(0)
+        hift_cache_source = torch.zeros(B, 1, 0).to(self.device)
 
         output_wavs, *_ = self.mel2wav.inference(speech_feat=output_mels, cache_source=hift_cache_source)
 
@@ -295,7 +296,8 @@ class S3Token2Wav(S3Token2Mel):
     @torch.inference_mode()
     def hift_inference(self, speech_feat, cache_source: torch.Tensor = None):
         if cache_source is None:
-            cache_source = torch.zeros(1, 1, 0).to(self.device)
+            B = speech_feat.size(0)
+            cache_source = torch.zeros(B, 1, 0).to(self.device)
         return self.mel2wav.inference(speech_feat=speech_feat, cache_source=cache_source)
 
     @torch.inference_mode()
