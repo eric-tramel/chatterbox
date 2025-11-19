@@ -351,6 +351,8 @@ class ChatterboxMultilingualTTS:
         results = []
         for i in range(wav_batch.size(0)):
             wav = wav_batch[i]
+            if wav.dim() == 1:
+                wav = wav.unsqueeze(0)
             valid_samples = int(speech_lens[i].item() * _SAMPLES_PER_SPEECH_TOKEN)
             if valid_samples <= 0 or valid_samples > wav.size(-1):
                 valid_samples = wav.size(-1)

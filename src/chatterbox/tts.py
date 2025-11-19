@@ -306,6 +306,8 @@ class ChatterboxTTS:
         trimmed = []
         for idx in range(wav_batch.size(0)):
             wav = wav_batch[idx]
+            if wav.dim() == 1:
+                wav = wav.unsqueeze(0)
             valid_samples = int(speech_lens[idx].item() * _SAMPLES_PER_SPEECH_TOKEN)
             if valid_samples <= 0 or valid_samples > wav.size(-1):
                 valid_samples = wav.size(-1)
