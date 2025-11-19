@@ -104,7 +104,7 @@ class ChatterboxVC:
                 speech_token_lens=s3_token_lens,
             )
             wav = wav.squeeze(0).detach().cpu()
-            valid_samples = int(mel_lens[0].item() * self._SAMPLES_PER_MEL_FRAME)
+            valid_samples = int(s3_token_lens[0].item() * self._SAMPLES_PER_SPEECH_TOKEN)
             if valid_samples <= 0 or valid_samples > wav.size(-1):
                 valid_samples = wav.size(-1)
             wav = wav[:, :valid_samples].squeeze(0).numpy()
