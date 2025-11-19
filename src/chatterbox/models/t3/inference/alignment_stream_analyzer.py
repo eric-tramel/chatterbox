@@ -38,6 +38,7 @@ class AlignmentStreamAnalyzer:
         alignment_layer_idx=9,
         eos_idx=0,
         batch_index: int = 0,
+        speech_start_idx: int = None,
     ):
         """
         Some transformer TTS models implicitly solve text-speech alignment in one or more of their self-attention
@@ -55,6 +56,8 @@ class AlignmentStreamAnalyzer:
         self.curr_frame_pos = 0
         self.text_position = 0
         self.batch_index = batch_index
+        # If speech_start_idx is not provided, assume speech starts immediately after text (backward compat)
+        self.speech_start_idx = speech_start_idx if speech_start_idx is not None else j
 
         self.started = False
         self.started_at = None
@@ -107,7 +110,8 @@ class AlignmentStreamAnalyzer:
         i, j = self.text_tokens_slice
         if self.curr_frame_pos == 0:
             # first chunk has conditioning info, text tokens, and BOS token
-            A_chunk = aligned_attn[j:, i:j].clone().cpu() # (T, S)
+            # Use speech_start_idx to skip potential padding between text and speech
+            A_chunk = aligned_attn[self.speech_start_idx:, i:j].clone().cpu() # (T, S)
         else:
             # subsequent chunks have 1 frame due to KV-caching
             A_chunk = aligned_attn[:, i:j].clone().cpu() # (1, S)

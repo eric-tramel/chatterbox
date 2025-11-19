@@ -303,11 +303,13 @@ class T3(nn.Module):
             cfg_weight=cfg_weight,
         )
 
-        # Create attention mask
+        # Create attention mask and position_ids
         # NOTE: mask padded text positions so that attention does not attend to them
+        # NOTE: adjust position_ids to skip over the padded text region
         device = embeds.device
         B_embed, L_embed, _ = embeds.shape
         attention_mask = torch.ones((B_embed, L_embed), dtype=torch.long, device=device)
+        position_ids = torch.arange(L_embed, dtype=torch.long, device=device).unsqueeze(0).repeat(B_embed, 1)
 
         max_text_len = model_text_tokens.size(1)
         for i in range(B_embed):
@@ -316,11 +318,20 @@ class T3(nn.Module):
             pad_end = len_cond + max_text_len
             if pad_end > pad_start:
                 attention_mask[i, pad_start:pad_end] = 0
+                # Shift speech positions left to close the gap
+                # Positions after pad_end are shifted by -(pad_end - pad_start)
+                shift = pad_end - pad_start
+                position_ids[i, pad_end:] -= shift
+                # We can also zero out the position_ids in the padded region for clarity (optional)
+                position_ids[i, pad_start:pad_end] = 0
 
         self.compiled = False
         if not self.compiled:
             alignment_stream_analyzer = None
             if self.hp.is_multilingual:
+                # Speech starts after cond + full padded text
+                speech_start_idx = len_cond + model_text_tokens.size(1)
+                
                 text_slice = lambda tl: (len_cond, len_cond + int(tl))
                 repeats = 2 if cfg_enabled else 1
                 analyzers: List[AlignmentStreamAnalyzer] = []
@@ -333,6 +344,7 @@ class T3(nn.Module):
                         alignment_layer_idx=9,
                         eos_idx=self.hp.stop_speech_token,
                         batch_index=hf_batch_idx,
+                        speech_start_idx=speech_start_idx,
                     )
                     assert analyzer.eos_idx == self.hp.stop_speech_token
                     analyzers.append(analyzer)
@@ -358,9 +370,14 @@ class T3(nn.Module):
         model_bos_embed = _cfg_repeat(bos_embed)
         inputs_embeds = torch.cat([embeds, model_bos_embed], dim=1)
 
-        # update mask for BOS
+        # update mask and pos_ids for BOS
         bos_mask = torch.ones((inputs_embeds.size(0), 1), dtype=torch.long, device=device)
         attention_mask = torch.cat([attention_mask, bos_mask], dim=1)
+        
+        # For position_ids, we just append the next value for each sequence
+        # Current last pos is position_ids[:, -1]
+        next_pos = position_ids[:, -1:] + 1
+        position_ids = torch.cat([position_ids, next_pos], dim=1)
 
         generated_ids = bos_token.clone()
         predicted = []
@@ -376,6 +393,7 @@ class T3(nn.Module):
             inputs_embeds=inputs_embeds,
             past_key_values=None,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             use_cache=True,
             output_attentions=True,
             output_hidden_states=True,
@@ -433,10 +451,18 @@ class T3(nn.Module):
             step_mask = torch.ones((model_next_embed.size(0), 1), dtype=torch.long, device=device)
             attention_mask = torch.cat([attention_mask, step_mask], dim=1)
 
+            # update pos_ids for next token
+            next_pos = position_ids[:, -1:] + 1
+            position_ids = torch.cat([position_ids, next_pos], dim=1)
+            
+            # NOTE: we only pass the *new* position_ids for the current step
+            step_pos_ids = next_pos
+
             output = self.patched_model(
                 inputs_embeds=model_next_embed,
                 past_key_values=past,
                 attention_mask=attention_mask,
+                position_ids=step_pos_ids,
                 output_attentions=True,
                 output_hidden_states=True,
                 return_dict=True,
