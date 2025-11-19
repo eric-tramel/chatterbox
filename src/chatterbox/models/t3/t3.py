@@ -1,6 +1,7 @@
 # Copyright (c) 2025 Resemble AI
 # MIT License
 import logging
+import os
 from typing import Union, Optional, List
 
 logger = logging.getLogger(__name__)
@@ -253,6 +254,7 @@ class T3(nn.Module):
         """
         assert prepend_prompt_speech_tokens is None, "not implemented"
         _ensure_BOT_EOT(text_tokens, self.hp)
+        debug_batch_logging = os.environ.get("T3_BATCH_DEBUG") == "1"
         text_tokens = torch.atleast_2d(text_tokens).to(dtype=torch.long, device=self.device)
         base_batch = text_tokens.size(0)
         if text_token_lens is None:
@@ -312,6 +314,15 @@ class T3(nn.Module):
         position_ids = torch.arange(L_embed, dtype=torch.long, device=device).unsqueeze(0).repeat(B_embed, 1)
 
         max_text_len = model_text_tokens.size(1)
+        if debug_batch_logging:
+            logger.info(
+                "[t3-debug] B_embed=%d base_batch=%d len_cond=%d max_text_len=%d",
+                B_embed,
+                base_batch,
+                len_cond,
+                max_text_len,
+            )
+        debug_samples = min(3, B_embed) if debug_batch_logging else 0
         for i in range(B_embed):
             valid_text_len = model_text_token_lens[i].item()
             pad_start = len_cond + valid_text_len
@@ -325,12 +336,27 @@ class T3(nn.Module):
                 # We can also zero out the position_ids in the padded region for clarity (optional)
                 position_ids[i, pad_start:pad_end] = 0
 
+            if i < debug_samples:
+                mask_slice = attention_mask[i, len_cond : len_cond + max_text_len]
+                pos_slice = position_ids[i, len_cond : len_cond + max_text_len + 2]  # include BOS
+                logger.info(
+                    "[t3-debug] sample=%d valid_text_len=%d pad=[%d,%d) text_mask=%s text_pos_ids=%s",
+                    i,
+                    valid_text_len,
+                    pad_start,
+                    pad_end,
+                    mask_slice.tolist(),
+                    pos_slice.tolist(),
+                )
+
         self.compiled = False
         if not self.compiled:
             alignment_stream_analyzer = None
             if self.hp.is_multilingual:
                 # Speech starts after cond + full padded text
                 speech_start_idx = len_cond + model_text_tokens.size(1)
+                if debug_batch_logging:
+                    logger.info("[t3-debug] alignment speech_start_idx=%d", speech_start_idx)
                 
                 text_slice = lambda tl: (len_cond, len_cond + int(tl))
                 repeats = 2 if cfg_enabled else 1
