@@ -290,24 +290,17 @@ class T3(nn.Module):
         self.compiled = False
         if not self.compiled:
             alignment_stream_analyzer = None
-            if self.hp.is_multilingual:
-                text_slice = lambda tl: (len_cond, len_cond + int(tl))
-                repeats = 2 if cfg_enabled else 1
-                analyzers: List[AlignmentStreamAnalyzer] = []
-                for batch_idx, text_len in enumerate(text_lengths):
-                    hf_batch_idx = batch_idx * repeats
-                    analyzer = AlignmentStreamAnalyzer(
-                        self.tfmr,
-                        None,
-                        text_tokens_slice=text_slice(text_len),
-                        alignment_layer_idx=9,
-                        eos_idx=self.hp.stop_speech_token,
-                        batch_index=hf_batch_idx,
-                    )
-                    assert analyzer.eos_idx == self.hp.stop_speech_token
-                    analyzers.append(analyzer)
-                if analyzers:
-                    alignment_stream_analyzer = analyzers if base_batch > 1 else analyzers[0]
+            if self.hp.is_multilingual and base_batch == 1:
+                text_len = int(text_lengths[0])
+                alignment_stream_analyzer = AlignmentStreamAnalyzer(
+                    self.tfmr,
+                    None,
+                    text_tokens_slice=(len_cond, len_cond + text_len),
+                    alignment_layer_idx=9,
+                    eos_idx=self.hp.stop_speech_token,
+                    batch_index=0,
+                )
+                assert alignment_stream_analyzer.eos_idx == self.hp.stop_speech_token
 
             patched_model = T3HuggingfaceBackend(
                 config=self.cfg,
