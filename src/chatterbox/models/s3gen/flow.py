@@ -276,9 +276,11 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         token = self.input_embedding(torch.clamp(token, min=0, max=self.input_embedding.num_embeddings-1)) * mask
 
         # text encode
-        h, h_lengths = self.encoder(token, token_len)
+        h, h_masks = self.encoder(token, token_len)
         if finalize is False:
-            h = h[:, :-self.pre_lookahead_len * self.token_mel_ratio]
+            cut_len = self.pre_lookahead_len * self.token_mel_ratio
+            h = h[:, :-cut_len]
+            h_masks = h_masks[:, :, :-cut_len]
         mel_len1, mel_len2 = prompt_feat.shape[1], h.shape[1] - prompt_feat.shape[1]
         h = self.encoder_proj(h)
 
@@ -287,10 +289,11 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
 
-        # Create mask that accounts for the full length of the concatenated sequence (h)
-        # mask needs to be (B, 1, T) for the decoder's attention.
-        # h_lengths includes both prompt and generated text parts.
-        mask = (~make_pad_mask(h_lengths, max_len=mel_len1 + mel_len2)).to(h)
+        # h_masks is already (B, 1, T) and boolean (True for valid)
+        # The decoder expects mask.unsqueeze(1) to be (B, 1, T).
+        # So we need to provide (B, T) to the decoder call below, OR modify the call.
+        # Let's squeeze it to (B, T).
+        mask = h_masks.squeeze(1)
         feat, _ = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),
