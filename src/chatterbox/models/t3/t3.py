@@ -350,6 +350,7 @@ class T3(nn.Module):
                 )
 
         self.compiled = False
+        analyzer_instances: Optional[Union[AlignmentStreamAnalyzer, List[AlignmentStreamAnalyzer]]] = None
         if not self.compiled:
             alignment_stream_analyzer = None
             if self.hp.is_multilingual:
@@ -376,6 +377,7 @@ class T3(nn.Module):
                     analyzers.append(analyzer)
                 if analyzers:
                     alignment_stream_analyzer = analyzers if base_batch > 1 else analyzers[0]
+                    analyzer_instances = alignment_stream_analyzer
 
             patched_model = T3HuggingfaceBackend(
                 config=self.cfg,
@@ -414,6 +416,22 @@ class T3(nn.Module):
         repetition_penalty_processor = RepetitionPenaltyLogitsProcessor(
             penalty=float(repetition_penalty)
         )
+
+        tail_allowance = getattr(self.hp, "alignment_tail_allowance", 20)
+        completion_steps: List[Optional[int]] = [None] * base_batch
+
+        def _update_completion_states(analyzers_obj, steps_list, current_len):
+            if analyzers_obj is None:
+                return
+            if isinstance(analyzers_obj, list):
+                for idx, analyzer in enumerate(analyzers_obj):
+                    if not hasattr(analyzer, "complete"):
+                        continue
+                    if analyzer.complete and steps_list[idx] is None:
+                        steps_list[idx] = current_len
+            else:
+                if hasattr(analyzers_obj, "complete") and analyzers_obj.complete and steps_list[0] is None:
+                    steps_list[0] = current_len
 
         output = self.patched_model(
             inputs_embeds=inputs_embeds,
@@ -465,7 +483,26 @@ class T3(nn.Module):
             predicted.append(next_token)
             generated_ids = torch.cat([generated_ids, next_token], dim=1)
 
-            finished |= next_token.squeeze(-1).eq(self.hp.stop_speech_token)
+            current_len = generated_ids.size(1) - 1  # exclude initial BOS placeholder
+            _update_completion_states(analyzer_instances, completion_steps, current_len)
+
+            tail_force_mask = torch.zeros(base_batch, dtype=torch.bool, device=device)
+            if (
+                tail_allowance is not None
+                and tail_allowance > 0
+                and analyzer_instances is not None
+            ):
+                for idx, step_at in enumerate(completion_steps):
+                    if step_at is None or finished[idx]:
+                        continue
+                    if current_len - step_at >= tail_allowance:
+                        tail_force_mask[idx] = True
+
+            if tail_force_mask.any():
+                generated_ids[tail_force_mask, -1] = self.hp.stop_speech_token
+                predicted[-1][tail_force_mask, 0] = self.hp.stop_speech_token
+
+            finished |= predicted[-1].squeeze(-1).eq(self.hp.stop_speech_token)
             if torch.all(finished):
                 break
 

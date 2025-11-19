@@ -1,6 +1,7 @@
 import copy
 
 import torch
+import types
 
 from chatterbox.models.t3.t3 import T3
 from chatterbox.models.t3.modules.t3_config import T3Config
@@ -186,6 +187,75 @@ def test_alignment_receives_per_sample_lengths_with_cfg(monkeypatch):
         assert slice_len == lengths[idx].item()
         assert analyzer.batch_index == idx * repeats
         assert analyzer.calls > 0
+
+
+def test_tail_allowance_limits_post_completion_tokens(monkeypatch):
+    hp = _make_tiny_hp()
+    hp.alignment_tail_allowance = 2
+    t3 = T3(copy.deepcopy(hp))
+    batch = 1
+    text_tokens = torch.tensor(
+        [[hp.start_text_token, 5, hp.stop_text_token, hp.stop_text_token]],
+        dtype=torch.long,
+    )
+    lengths = torch.tensor([3], dtype=torch.long)
+    cond = _make_cond(hp, batch)
+
+    class AnalyzerStub:
+        def __init__(self, *_, eos_idx=None, **__):
+            self.eos_idx = eos_idx
+            self.complete = False
+
+        def step(self, logits, next_token=None):
+            self.complete = True
+            return logits
+
+        class FakeBackend:
+            def __init__(self, *_, alignment_stream_analyzer=None, **__):
+                self.alignment_stream_analyzer = alignment_stream_analyzer
+                self.steps = 0
+                self.vocab = t3.hp.speech_tokens_dict_size
+
+        def __call__(
+            self,
+            inputs_embeds,
+            past_key_values=None,
+            attention_mask=None,
+            position_ids=None,
+            use_cache=True,
+            output_attentions=False,
+            output_hidden_states=True,
+            return_dict=True,
+        ):
+            logits = torch.full(
+                    (inputs_embeds.size(0), 1, self.vocab),
+                -1e9,
+                dtype=inputs_embeds.dtype,
+                device=inputs_embeds.device,
+            )
+                token_id = min(10 + self.steps, self.vocab - 1)
+            logits[..., token_id] = 0.0
+            self.steps += 1
+            return types.SimpleNamespace(
+                logits=logits,
+                past_key_values=tuple(),
+            )
+
+    monkeypatch.setattr("chatterbox.models.t3.t3.AlignmentStreamAnalyzer", AnalyzerStub)
+    monkeypatch.setattr("chatterbox.models.t3.t3.T3HuggingfaceBackend", FakeBackend)
+
+    outputs = t3.inference(
+        t3_cond=cond,
+        text_tokens=text_tokens,
+        text_token_lens=lengths,
+        max_new_tokens=10,
+        temperature=1.0,
+        top_p=1.0,
+        min_p=0.0,
+        repetition_penalty=1.0,
+        cfg_weight=0.0,
+    )
+    assert outputs.shape[1] == hp.alignment_tail_allowance
 
 
 def test_mtl_generate_batch_trims_each_sample(monkeypatch):
