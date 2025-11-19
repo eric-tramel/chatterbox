@@ -351,12 +351,16 @@ class ChatterboxMultilingualTTS:
 
         wav_batch = wav_batch.detach().cpu()
         speech_lens = speech_lens.detach().cpu()
+        mel_lens = mel_lens.detach().cpu()
         results = []
         for i in range(wav_batch.size(0)):
             wav = wav_batch[i]
             if wav.dim() == 1:
                 wav = wav.unsqueeze(0)
-            valid_samples = int(speech_lens[i].item() * _SAMPLES_PER_SPEECH_TOKEN)
+            mel_frames = int(mel_lens[i].item())
+            valid_samples = int(mel_frames * _SAMPLES_PER_MEL_FRAME)
+            if valid_samples <= 0 or valid_samples > wav.size(-1):
+                valid_samples = int(speech_lens[i].item() * _SAMPLES_PER_SPEECH_TOKEN)
             if valid_samples <= 0 or valid_samples > wav.size(-1):
                 valid_samples = wav.size(-1)
             wav = wav[:, :valid_samples]

@@ -64,6 +64,8 @@ class AlignmentStreamAnalyzer:
         
         # Track generated tokens for repetition detection
         self.generated_tokens = []
+        self.token_repetition_logged = False
+        self.force_eos_logged = False
 
         # Using `output_attentions=True` is incompatible with optimized attention kernels, so
         # using it for all layers slows things down too much. We can apply it to just one layer
@@ -163,14 +165,14 @@ class AlignmentStreamAnalyzer:
             
         # Check for excessive token repetition (3x same token in a row)
         token_repetition = (
-            # self.complete and 
             len(self.generated_tokens) >= 3 and
-            len(set(self.generated_tokens[-2:])) == 1
+            len(set(self.generated_tokens[-3:])) == 1
         )
         
-        if token_repetition:
+        if token_repetition and not self.token_repetition_logged:
             repeated_token = self.generated_tokens[-1]
-            logger.warning(f"🚨 Detected 2x repetition of token {repeated_token}")
+            logger.warning(f"🚨 Detected ≥3x repetition of token {repeated_token}")
+            self.token_repetition_logged = True
             
         # Suppress EoS to prevent early termination
         if cur_text_posn < S - 3 and S > 5:  # Only suppress if text is longer than 5 tokens
@@ -179,7 +181,9 @@ class AlignmentStreamAnalyzer:
         # If a bad ending is detected, force emit EOS by modifying logits
         # NOTE: this means logits may be inconsistent with latents!
         if long_tail or alignment_repetition or token_repetition:
-            logger.warning(f"forcing EOS token, {long_tail=}, {alignment_repetition=}, {token_repetition=}")
+            if not self.force_eos_logged:
+                logger.warning(f"forcing EOS token, {long_tail=}, {alignment_repetition=}, {token_repetition=}")
+                self.force_eos_logged = True
             # (±2**15 is safe for all dtypes >= 16bit)
             logits = -(2**15) * torch.ones_like(logits)
             logits[..., self.eos_idx] = 2**15
