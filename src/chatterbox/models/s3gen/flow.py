@@ -271,28 +271,30 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         embedding = self.spk_embed_affine_layer(embedding)
 
         # concat text and prompt_text
-        gen_token_len = token_len.clone()
-        token, token_len = torch.concat([prompt_token, token], dim=1), prompt_token_len + gen_token_len
+        token, token_len = torch.concat([prompt_token, token], dim=1), prompt_token_len + token_len
         mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
         token = self.input_embedding(torch.clamp(token, min=0, max=self.input_embedding.num_embeddings-1)) * mask
 
         # text encode
-        h, _ = self.encoder(token, token_len)
+        h, h_masks = self.encoder(token, token_len)
         if finalize is False:
             cut_len = self.pre_lookahead_len * self.token_mel_ratio
             h = h[:, :-cut_len]
+            h_masks = h_masks[:, :, :-cut_len]
+
         mel_len1 = prompt_feat.shape[1]
-        mel_len2 = (gen_token_len * self.token_mel_ratio).long()
+        mask = h_masks.squeeze(1).to(torch.bool)
+        max_total_len = mask.size(1)
+        total_valid = mask.sum(dim=1)
+        mel_len2 = torch.clamp(total_valid - mel_len1, min=0)
+
         h = self.encoder_proj(h)
 
         # get conditions
-        total_mel_len = mel_len1 + mel_len2
-        max_total_len = int(total_mel_len.max().item())
         conds = torch.zeros([batch_size, max_total_len, self.output_size], device=token.device, dtype=h.dtype)
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
 
-        mask = (~make_pad_mask(total_mel_len)).to(h)
         feat, _ = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),
