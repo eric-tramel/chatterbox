@@ -17,7 +17,12 @@ def test_apply_alignment_analyzers_noop_when_none():
     logits = torch.randn(2, 4)
     generated = torch.ones(2, 1, dtype=torch.long)
 
-    result = T3._apply_alignment_stream_analyzers(logits.clone(), None, generated)
+    result = T3._apply_alignment_stream_analyzers(
+        logits.clone(),
+        None,
+        generated,
+        finished_mask=torch.zeros(2, dtype=torch.bool),
+    )
 
     assert torch.equal(result, logits)
 
@@ -27,7 +32,12 @@ def test_apply_alignment_analyzers_single():
     logits = torch.zeros(1, 3)
     generated = torch.tensor([[10, 11]], dtype=torch.long)
 
-    result = T3._apply_alignment_stream_analyzers(logits.clone(), analyzer, generated)
+    result = T3._apply_alignment_stream_analyzers(
+        logits.clone(),
+        analyzer,
+        generated,
+        finished_mask=torch.zeros(1, dtype=torch.bool),
+    )
 
     assert torch.allclose(result, torch.full((1, 3), 0.5))
     assert analyzer.calls, "Analyzer was not invoked"
@@ -47,7 +57,12 @@ def test_apply_alignment_analyzers_batch_list():
         dtype=torch.long,
     )
 
-    result = T3._apply_alignment_stream_analyzers(logits.clone(), analyzers, generated)
+    result = T3._apply_alignment_stream_analyzers(
+        logits.clone(),
+        analyzers,
+        generated,
+        finished_mask=torch.zeros(3, dtype=torch.bool),
+    )
 
     expected = torch.tensor(
         [
@@ -71,8 +86,30 @@ def test_apply_alignment_analyzers_raises_on_mismatch():
     generated = torch.zeros(2, 1, dtype=torch.long)
 
     try:
-        T3._apply_alignment_stream_analyzers(logits, analyzers, generated)
+        T3._apply_alignment_stream_analyzers(
+            logits,
+            analyzers,
+            generated,
+            finished_mask=torch.zeros(2, dtype=torch.bool),
+        )
         assert False, "Expected ValueError for mismatched analyzer count"
     except ValueError:
         pass
+
+
+def test_apply_alignment_analyzers_skips_finished_rows():
+    analyzer = DummyAnalyzer(delta=2.0)
+    logits = torch.zeros(1, 2)
+    generated = torch.ones(1, 1, dtype=torch.long)
+    finished = torch.tensor([True])
+
+    result = T3._apply_alignment_stream_analyzers(
+        logits.clone(),
+        analyzer,
+        generated,
+        finished_mask=finished,
+    )
+
+    assert torch.equal(result, logits)
+    assert not analyzer.calls, "Analyzer should not run for finished samples"
 

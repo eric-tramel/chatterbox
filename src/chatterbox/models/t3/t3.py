@@ -342,7 +342,12 @@ class T3(nn.Module):
                 logits = logits_step
 
             analyzer = getattr(self.patched_model, "alignment_stream_analyzer", None)
-            logits = self._apply_alignment_stream_analyzers(logits, analyzer, generated_ids)
+            logits = self._apply_alignment_stream_analyzers(
+                logits,
+                analyzer,
+                generated_ids,
+                finished_mask=finished,
+            )
 
             logits = repetition_penalty_processor(generated_ids, logits)
 
@@ -387,7 +392,7 @@ class T3(nn.Module):
         return predicted_tokens
 
     @staticmethod
-    def _apply_alignment_stream_analyzers(logits, analyzers, generated_ids):
+    def _apply_alignment_stream_analyzers(logits, analyzers, generated_ids, finished_mask=None):
         if analyzers is None:
             return logits
 
@@ -399,7 +404,10 @@ class T3(nn.Module):
                 raise ValueError(
                     f"Alignment analyzer count ({len(analyzers)}) must match batch size ({batch_size})"
                 )
+            finished = finished_mask.tolist() if finished_mask is not None else [False] * batch_size
             for idx, analyzer in enumerate(analyzers):
+                if finished[idx]:
+                    continue
                 token = None
                 if generated_ids.size(1) > 0:
                     token = generated_ids[idx, -1]
@@ -412,6 +420,13 @@ class T3(nn.Module):
         token = None
         if generated_ids.size(1) > 0:
             token = generated_ids[0, -1]
+        if finished_mask is not None:
+            if torch.all(finished_mask):
+                return logits
+            finished_single = finished_mask[0].item()
+            if finished_single:
+                return logits
+
         if logits.dim() == 1:
             logits = logits.unsqueeze(0)
         return analyzers.step(logits, next_token=token)
