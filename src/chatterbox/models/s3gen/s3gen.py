@@ -205,13 +205,13 @@ class S3Token2Mel(torch.nn.Module):
         else:
             speech_token_lens = speech_token_lens.to(self.device)
 
-        output_mels, _ = self.flow.inference(
+        output_mels, valid_mel_lens = self.flow.inference(
             token=speech_tokens,
             token_len=speech_token_lens,
             finalize=finalize,
             **ref_dict,
         )
-        return output_mels
+        return output_mels, valid_mel_lens
 
 
 class S3Token2Wav(S3Token2Mel):
@@ -251,7 +251,7 @@ class S3Token2Wav(S3Token2Mel):
         finalize: bool = False,
         speech_token_lens: Optional[torch.LongTensor] = None,
     ):
-        output_mels = super().forward(
+        output_mels, output_mel_lens = super().forward(
             speech_tokens,
             ref_wav=ref_wav,
             ref_sr=ref_sr,
