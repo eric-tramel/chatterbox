@@ -271,26 +271,28 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         embedding = self.spk_embed_affine_layer(embedding)
 
         # concat text and prompt_text
-        token, token_len = torch.concat([prompt_token, token], dim=1), prompt_token_len + token_len
+        gen_token_len = token_len.clone()
+        token, token_len = torch.concat([prompt_token, token], dim=1), prompt_token_len + gen_token_len
         mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
         token = self.input_embedding(torch.clamp(token, min=0, max=self.input_embedding.num_embeddings-1)) * mask
 
         # text encode
-        h, h_masks = self.encoder(token, token_len)
+        h, _ = self.encoder(token, token_len)
         if finalize is False:
             cut_len = self.pre_lookahead_len * self.token_mel_ratio
             h = h[:, :-cut_len]
-            h_masks = h_masks[:, :, :-cut_len]
-        mel_len1, mel_len2 = prompt_feat.shape[1], h.shape[1] - prompt_feat.shape[1]
+        mel_len1 = prompt_feat.shape[1]
+        mel_len2 = (gen_token_len * self.token_mel_ratio).long()
         h = self.encoder_proj(h)
 
         # get conditions
-        conds = torch.zeros([batch_size, mel_len1 + mel_len2, self.output_size], device=token.device).to(h.dtype)
+        total_mel_len = mel_len1 + mel_len2
+        max_total_len = int(total_mel_len.max().item())
+        conds = torch.zeros([batch_size, max_total_len, self.output_size], device=token.device, dtype=h.dtype)
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
 
-        # h_masks is already (B, 1, T) and boolean (True for valid positions)
-        mask = h_masks.squeeze(1).to(torch.bool)
+        mask = (~make_pad_mask(total_mel_len)).to(h)
         feat, _ = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),
@@ -299,11 +301,8 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             n_timesteps=10
         )
         feat = feat[:, :, mel_len1:]
-        assert feat.shape[2] == mel_len2
+        assert feat.shape[2] >= int(mel_len2.max().item())
         
-        # Calculate valid mel lengths for each item in the batch using the decoder mask
-        # Only count the portion corresponding to generated speech (after the prompt).
-        gen_mask = mask[:, mel_len1:]
-        valid_mel_lens = gen_mask.sum(dim=1).long()
+        valid_mel_lens = mel_len2
         
         return feat.float(), valid_mel_lens
