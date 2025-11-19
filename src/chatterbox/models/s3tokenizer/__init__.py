@@ -18,12 +18,20 @@ def drop_invalid_tokens(x):
 
     def _trim(sequence):
         if SOS in sequence:
-            s = (sequence == SOS).nonzero(as_tuple=True)[0].squeeze(0) + 1
+            # Ensure s is a Python int or 0-d tensor item
+            s = (sequence == SOS).nonzero(as_tuple=True)[0]
+            if s.numel() > 1:
+                s = s[0]  # Take first occurrence
+            s = s.item() + 1
         else:
             s = 0
 
         if EOS in sequence:
-            e = (sequence == EOS).nonzero(as_tuple=True)[0].squeeze(0)
+            # Ensure e is a Python int
+            e = (sequence == EOS).nonzero(as_tuple=True)[0]
+            if e.numel() > 1:
+                e = e[0]  # Take first occurrence
+            e = e.item()
         else:
             e = None
         return sequence[s:e]
