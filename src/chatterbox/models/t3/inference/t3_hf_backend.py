@@ -74,6 +74,7 @@ class T3HuggingfaceBackend(LlamaPreTrainedModel, GenerationMixin):
         self,
         inputs_embeds: torch.Tensor,
         past_key_values: Optional[torch.Tensor]=None,
+        attention_mask: Optional[torch.Tensor]=None,
         use_cache=True,
         output_attentions=False,
         output_hidden_states=True,
@@ -95,6 +96,7 @@ class T3HuggingfaceBackend(LlamaPreTrainedModel, GenerationMixin):
         tfmr_out = self.model(
             inputs_embeds=inputs_embeds,
             past_key_values=past_key_values,
+            attention_mask=attention_mask,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,

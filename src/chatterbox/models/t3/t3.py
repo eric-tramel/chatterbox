@@ -303,6 +303,20 @@ class T3(nn.Module):
             cfg_weight=cfg_weight,
         )
 
+        # Create attention mask
+        # NOTE: mask padded text positions so that attention does not attend to them
+        device = embeds.device
+        B_embed, L_embed, _ = embeds.shape
+        attention_mask = torch.ones((B_embed, L_embed), dtype=torch.long, device=device)
+
+        max_text_len = model_text_tokens.size(1)
+        for i in range(B_embed):
+            valid_text_len = model_text_token_lens[i].item()
+            pad_start = len_cond + valid_text_len
+            pad_end = len_cond + max_text_len
+            if pad_end > pad_start:
+                attention_mask[i, pad_start:pad_end] = 0
+
         self.compiled = False
         if not self.compiled:
             alignment_stream_analyzer = None
@@ -344,6 +358,10 @@ class T3(nn.Module):
         model_bos_embed = _cfg_repeat(bos_embed)
         inputs_embeds = torch.cat([embeds, model_bos_embed], dim=1)
 
+        # update mask for BOS
+        bos_mask = torch.ones((inputs_embeds.size(0), 1), dtype=torch.long, device=device)
+        attention_mask = torch.cat([attention_mask, bos_mask], dim=1)
+
         generated_ids = bos_token.clone()
         predicted = []
         finished = torch.zeros(base_batch, dtype=torch.bool, device=device)
@@ -357,6 +375,7 @@ class T3(nn.Module):
         output = self.patched_model(
             inputs_embeds=inputs_embeds,
             past_key_values=None,
+            attention_mask=attention_mask,
             use_cache=True,
             output_attentions=True,
             output_hidden_states=True,
@@ -410,9 +429,14 @@ class T3(nn.Module):
             next_token_embed = next_token_embed + self.speech_pos_emb.get_fixed_embedding(step + 1)
             model_next_embed = _cfg_repeat(next_token_embed)
 
+            # update mask for next token
+            step_mask = torch.ones((model_next_embed.size(0), 1), dtype=torch.long, device=device)
+            attention_mask = torch.cat([attention_mask, step_mask], dim=1)
+
             output = self.patched_model(
                 inputs_embeds=model_next_embed,
                 past_key_values=past,
+                attention_mask=attention_mask,
                 output_attentions=True,
                 output_hidden_states=True,
                 return_dict=True,
