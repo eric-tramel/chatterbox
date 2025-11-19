@@ -91,28 +91,53 @@ class ConditionalCFM(BASECFM):
         # Or in future might add like a return_all_steps flag
         sol = []
 
+        batch_size = x.size(0)
+
         # Do not use concat, it may cause memory format changed and trt infer with wrong results!
-        x_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
-        mask_in = torch.zeros([2, 1, x.size(2)], device=x.device, dtype=x.dtype)
-        mu_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
-        t_in = torch.zeros([2], device=x.device, dtype=x.dtype)
-        spks_in = torch.zeros([2, 80], device=x.device, dtype=x.dtype)
-        cond_in = torch.zeros([2, 80, x.size(2)], device=x.device, dtype=x.dtype)
+        x_in = torch.zeros([2 * batch_size, 80, x.size(2)], device=x.device, dtype=x.dtype)
+        mask_in = torch.zeros([2 * batch_size, 1, x.size(2)], device=x.device, dtype=x.dtype)
+        mu_in = torch.zeros([2 * batch_size, 80, x.size(2)], device=x.device, dtype=x.dtype)
+        t_in = torch.zeros([2 * batch_size], device=x.device, dtype=x.dtype)
+        spks_in = torch.zeros([2 * batch_size, 80], device=x.device, dtype=x.dtype)
+        cond_in = torch.zeros([2 * batch_size, 80, x.size(2)], device=x.device, dtype=x.dtype)
         for step in range(1, len(t_span)):
             # Classifier-Free Guidance inference introduced in VoiceBox
-            x_in[:] = x
-            mask_in[:] = mask
-            mu_in[0] = mu
-            t_in[:] = t.unsqueeze(0)
-            spks_in[0] = spks
-            cond_in[0] = cond
+            # We repeat inputs for CFG: first half is conditional, second half is unconditional (or vice versa depending on implementation)
+            # But looking at line 109 (x_in[:] = x), it seems it wants to duplicate x for both CFG passes?
+            # Wait, x_in shape is hardcoded to [2, ...]. This works for B=1.
+            # For B>1, we need [2*B, ...].
+            
+            # Tile x for CFG: (B, ...) -> (2B, ...)
+            x_repeated = x.repeat(2, 1, 1)
+            x_in[:] = x_repeated
+            
+            mask_repeated = mask.repeat(2, 1, 1)
+            mask_in[:] = mask_repeated
+            
+            # mu_in: first half is mu, second half is zeros (unconditional)? 
+            # The original code for B=1 was: mu_in[0] = mu. This implies mu_in[1] remains 0.
+            # For B>1, we should fill the first B elements with mu.
+            mu_in.fill_(0.0)
+            mu_in[:batch_size] = mu
+            
+            t_in[:] = t.repeat(2 * batch_size)
+            
+            spks_in.fill_(0.0)
+            spks_in[:batch_size] = spks
+            
+            cond_in.fill_(0.0)
+            cond_in[:batch_size] = cond
+            
             dphi_dt = self.forward_estimator(
                 x_in, mask_in,
                 mu_in, t_in,
                 spks_in,
                 cond_in
             )
-            dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [x.size(0), x.size(0)], dim=0)
+            
+            # Split back into conditional and unconditional parts
+            # dphi_dt shape is (2B, ...)
+            dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [batch_size, batch_size], dim=0)
             dphi_dt = ((1.0 + self.inference_cfg_rate) * dphi_dt - self.inference_cfg_rate * cfg_dphi_dt)
             x = x + dt * dphi_dt
             t = t + dt
@@ -209,8 +234,11 @@ class CausalConditionalCFM(ConditionalCFM):
             sample: generated mel-spectrogram
                 shape: (batch_size, n_feats, mel_timesteps)
         """
-
+        batch_size = mu.shape[0]
         z = self.rand_noise[:, :, :mu.size(2)].to(mu.device).to(mu.dtype) * temperature
+        if batch_size > 1:
+            z = z.expand(batch_size, -1, -1)
+            
         # fix prompt and overlap part mu and z
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         if self.t_scheduler == 'cosine':
