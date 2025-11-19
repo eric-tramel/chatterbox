@@ -88,6 +88,7 @@ class T3(nn.Module):
         t3_cond: T3Cond,
         text_tokens: torch.LongTensor,
         speech_tokens: torch.LongTensor,
+        text_token_lens: Optional[torch.LongTensor] = None,
         cfg_weight: float = 0.0,
     ):
         # prepare input embeddings (skip backbone tranformer embeddings)
@@ -101,6 +102,17 @@ class T3(nn.Module):
             text_emb = text_emb + self.text_pos_emb(text_tokens)
             speech_emb = speech_emb + self.speech_pos_emb(speech_tokens)
         len_cond = cond_emb.size(1)
+
+        if text_token_lens is not None:
+            text_token_lens = torch.atleast_1d(text_token_lens).to(text_tokens.device)
+            if text_token_lens.size(0) != text_emb.size(0):
+                raise ValueError(
+                    f"text_token_lens batch ({text_token_lens.size(0)}) must match text_tokens batch ({text_emb.size(0)})"
+                )
+            mask = torch.arange(
+                text_tokens.size(1), device=text_tokens.device
+            ).unsqueeze(0) >= text_token_lens.unsqueeze(1)
+            text_emb = text_emb.masked_fill(mask.unsqueeze(-1), 0.0)
 
         if cond_emb.size(0) != text_emb.size(0):
             if text_emb.size(0) % cond_emb.size(0) != 0:
@@ -134,6 +146,7 @@ class T3(nn.Module):
             t3_cond=t3_cond,
             text_tokens=text_tokens,
             speech_tokens=speech_tokens,
+            text_token_lens=text_token_lens,
         )
 
         # backbone tranformer forward
@@ -280,10 +293,13 @@ class T3(nn.Module):
                 raise ValueError("initial_speech_tokens batch size mismatch")
         model_initial_speech = _cfg_repeat(initial_speech_tokens)
 
+        model_text_token_lens = _cfg_repeat(text_token_lens)
+
         embeds, len_cond = self.prepare_input_embeds(
             t3_cond=t3_cond,
             text_tokens=model_text_tokens,
             speech_tokens=model_initial_speech,
+            text_token_lens=model_text_token_lens,
             cfg_weight=cfg_weight,
         )
 
