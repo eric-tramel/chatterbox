@@ -272,15 +272,24 @@ class T3(nn.Module):
         self.compiled = False
         if not self.compiled:
             alignment_stream_analyzer = None
-            if self.hp.is_multilingual and base_batch == 1:
-                alignment_stream_analyzer = AlignmentStreamAnalyzer(
-                    self.tfmr,
-                    None,
-                    text_tokens_slice=(len_cond, len_cond + model_text_tokens.size(-1)),
-                    alignment_layer_idx=9,
-                    eos_idx=self.hp.stop_speech_token,
-                )
-                assert alignment_stream_analyzer.eos_idx == self.hp.stop_speech_token
+            if self.hp.is_multilingual:
+                text_slice = (len_cond, len_cond + model_text_tokens.size(-1))
+                repeats = 2 if cfg_enabled else 1
+                analyzers: List[AlignmentStreamAnalyzer] = []
+                for batch_idx in range(base_batch):
+                    hf_batch_idx = batch_idx * repeats
+                    analyzer = AlignmentStreamAnalyzer(
+                        self.tfmr,
+                        None,
+                        text_tokens_slice=text_slice,
+                        alignment_layer_idx=9,
+                        eos_idx=self.hp.stop_speech_token,
+                        batch_index=hf_batch_idx,
+                    )
+                    assert analyzer.eos_idx == self.hp.stop_speech_token
+                    analyzers.append(analyzer)
+                if analyzers:
+                    alignment_stream_analyzer = analyzers if base_batch > 1 else analyzers[0]
 
             patched_model = T3HuggingfaceBackend(
                 config=self.cfg,
@@ -333,11 +342,7 @@ class T3(nn.Module):
                 logits = logits_step
 
             analyzer = getattr(self.patched_model, "alignment_stream_analyzer", None)
-            if analyzer is not None:
-                if logits.dim() == 1:
-                    logits = logits.unsqueeze(0)
-                last_token = generated_ids[0, -1].item() if generated_ids.size(0) == 1 else None
-                logits = analyzer.step(logits, next_token=last_token)
+            logits = self._apply_alignment_stream_analyzers(logits, analyzer, generated_ids)
 
             logits = repetition_penalty_processor(generated_ids, logits)
 
@@ -380,3 +385,33 @@ class T3(nn.Module):
         else:
             predicted_tokens = torch.zeros(base_batch, 0, dtype=torch.long, device=device)
         return predicted_tokens
+
+    @staticmethod
+    def _apply_alignment_stream_analyzers(logits, analyzers, generated_ids):
+        if analyzers is None:
+            return logits
+
+        if isinstance(analyzers, list):
+            if not analyzers:
+                return logits
+            batch_size = logits.size(0)
+            if batch_size != len(analyzers):
+                raise ValueError(
+                    f"Alignment analyzer count ({len(analyzers)}) must match batch size ({batch_size})"
+                )
+            for idx, analyzer in enumerate(analyzers):
+                token = None
+                if generated_ids.size(1) > 0:
+                    token = generated_ids[idx, -1]
+                logits[idx:idx + 1] = analyzer.step(
+                    logits[idx:idx + 1],
+                    next_token=token,
+                )
+            return logits
+
+        token = None
+        if generated_ids.size(1) > 0:
+            token = generated_ids[0, -1]
+        if logits.dim() == 1:
+            logits = logits.unsqueeze(0)
+        return analyzers.step(logits, next_token=token)

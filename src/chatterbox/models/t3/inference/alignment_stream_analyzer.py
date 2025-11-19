@@ -30,7 +30,15 @@ class AlignmentAnalysisResult:
 
 
 class AlignmentStreamAnalyzer:
-    def __init__(self, tfmr, queue, text_tokens_slice, alignment_layer_idx=9, eos_idx=0):
+    def __init__(
+        self,
+        tfmr,
+        queue,
+        text_tokens_slice,
+        alignment_layer_idx=9,
+        eos_idx=0,
+        batch_index: int = 0,
+    ):
         """
         Some transformer TTS models implicitly solve text-speech alignment in one or more of their self-attention
         activation maps. This module exploits this to perform online integrity checks which streaming.
@@ -46,6 +54,7 @@ class AlignmentStreamAnalyzer:
         # self.alignment_bin = torch.zeros(0, j-i)
         self.curr_frame_pos = 0
         self.text_position = 0
+        self.batch_index = batch_index
 
         self.started = False
         self.started_at = None
@@ -77,7 +86,8 @@ class AlignmentStreamAnalyzer:
             """
             if isinstance(output, tuple) and len(output) > 1 and output[1] is not None:
                 step_attention = output[1].cpu()  # (B, n_heads, T0, Ti)
-                self.last_aligned_attns[buffer_idx] = step_attention[0, head_idx]  # (T0, Ti)
+                batch_idx = min(self.batch_index, step_attention.size(0) - 1)
+                self.last_aligned_attns[buffer_idx] = step_attention[batch_idx, head_idx]  # (T0, Ti)
 
         target_layer = tfmr.layers[layer_idx].self_attn
         # Register hook and store the handle
