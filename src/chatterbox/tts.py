@@ -95,23 +95,29 @@ class Conditionals:
         if batch_size == 1:
             return self.t3, self.gen
 
-        def _expand_tensor(t: torch.Tensor) -> torch.Tensor:
+        def _tile_tensor(t: torch.Tensor) -> torch.Tensor:
             if t.dim() == 0:
                 return t
-            target_shape = (batch_size, *t.shape[1:])
-            return t.expand(*target_shape)
+            if t.size(0) == batch_size:
+                return t
+            if t.size(0) != 1:
+                raise ValueError(
+                    f"Cannot expand tensor with batch dimension {t.size(0)} to {batch_size}"
+                )
+            repeats = [batch_size] + [1] * (t.dim() - 1)
+            return t.repeat(*repeats)
 
         t3_kwargs = {}
         for field, value in self.t3.__dict__.items():
             if torch.is_tensor(value):
-                t3_kwargs[field] = _expand_tensor(value)
+                t3_kwargs[field] = _tile_tensor(value)
             else:
                 t3_kwargs[field] = value
 
         expanded_gen = {}
         for key, value in self.gen.items():
             if torch.is_tensor(value):
-                expanded_gen[key] = _expand_tensor(value)
+                expanded_gen[key] = _tile_tensor(value)
             else:
                 expanded_gen[key] = value
 
