@@ -42,6 +42,10 @@ torch = [
 torchaudio = [
     { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
 ]
+# torchcodec doesn't have aarch64 wheels on PyPI, build from source
+torchcodec = [
+    { git = "https://github.com/pytorch/torchcodec", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu129"
