@@ -71,7 +71,7 @@ def test_batch_inference():
         output_dir = Path("artifacts")
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "batched_generation.wav"
-        torchaudio.save(str(output_path), concatenated, tts.sr)
+        torchaudio.save(str(output_path), concatenated, tts.sr, backend="soundfile")
         logger.info(f"Saved concatenated waveform to {output_path.resolve()}")
 
     except Exception as e:
