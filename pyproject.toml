@@ -14,7 +14,7 @@ dependencies = [
     "s3tokenizer",
     "torch>=2.6.0",
     "torchaudio>=2.6.0",
-    "torchcodec",
+    "soundfile",
     "transformers==4.46.3",
     "diffusers==0.29.0",
     "resemble-perth==1.0.1",
@@ -41,10 +41,6 @@ torch = [
 ]
 torchaudio = [
     { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
-]
-# torchcodec doesn't have aarch64 wheels on PyPI, build from source
-torchcodec = [
-    { git = "https://github.com/pytorch/torchcodec", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
 ]
 
 [[tool.uv.index]]

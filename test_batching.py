@@ -3,8 +3,8 @@ import os
 import sys
 from pathlib import Path
 
+import soundfile as sf
 import torch
-import torchaudio
 
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
@@ -71,7 +71,7 @@ def test_batch_inference():
         output_dir = Path("artifacts")
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "batched_generation.wav"
-        torchaudio.save(str(output_path), concatenated, tts.sr)
+        sf.write(str(output_path), concatenated.squeeze(0).cpu().numpy(), tts.sr)
         logger.info(f"Saved concatenated waveform to {output_path.resolve()}")
 
     except Exception as e:
