@@ -32,5 +32,28 @@ Repository = "https://github.com/resemble-ai/chatterbox"
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
+[tool.uv.sources]
+# PyTorch CUDA 12.9 wheels for Linux (x86_64 and aarch64)
+# macOS uses CPU PyTorch from PyPI for local development
+torch = [
+    { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
+]
+torchaudio = [
+    { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+# Limit resolution to specific platforms to avoid cross-platform conflicts
+[tool.uv]
+environments = [
+    "sys_platform == 'darwin'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
