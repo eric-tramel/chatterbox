@@ -116,6 +116,30 @@ class AlignmentStreamAnalyzer:
         for handle in self._hook_handles:
             handle.remove()
         self._hook_handles.clear()
+    
+    def cleanup(self):
+        """
+        Fully clean up this analyzer, releasing all memory.
+        
+        Call this after inference is complete.
+        """
+        # Remove hooks first
+        self.remove_hooks()
+        
+        # Clear attention buffers
+        for i in range(len(self.last_aligned_attns)):
+            if self.last_aligned_attns[i] is not None:
+                del self.last_aligned_attns[i]
+        self.last_aligned_attns.clear()
+        
+        # Clear alignment tensor
+        if hasattr(self, 'alignment') and self.alignment is not None:
+            del self.alignment
+            self.alignment = None
+        
+        # Clear generated tokens
+        if hasattr(self, 'generated_tokens'):
+            self.generated_tokens.clear()
 
     def step(self, logits, next_token=None):
         """

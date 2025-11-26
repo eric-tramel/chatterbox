@@ -205,3 +205,22 @@ class ThreadSafeAlignmentStreamAnalyzer:
         self.curr_frame_pos += 1
         return logits
 
+    def cleanup(self) -> None:
+        """
+        Explicitly free memory held by this analyzer.
+        
+        Call this after inference is complete to help release GPU/CPU memory.
+        """
+        # Clear alignment tensor
+        if hasattr(self, 'alignment') and self.alignment is not None:
+            del self.alignment
+            self.alignment = None
+        
+        # Clear generated tokens list
+        if hasattr(self, 'generated_tokens'):
+            self.generated_tokens.clear()
+        
+        # Clear references (don't delete registry as it's shared)
+        self.registry = None
+        self.request_id = None
+

@@ -606,6 +606,11 @@ class T3(nn.Module):
                 context_manager.__exit__(None, None, None)
             if request_id:
                 registry.cleanup_request(request_id)
+            
+            # Explicitly clean up thread-safe analyzers to release memory
+            for analyzer in threadsafe_analyzers:
+                analyzer.cleanup()
+            threadsafe_analyzers.clear()
 
         if predicted:
             predicted_tokens = torch.cat(predicted, dim=1)

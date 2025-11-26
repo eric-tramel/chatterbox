@@ -77,7 +77,11 @@ class AttentionCapture:
         return result
     
     def clear(self) -> None:
-        """Clear captured attentions (called between forward passes if needed)."""
+        """Clear captured attentions and explicitly free GPU memory."""
+        # Explicitly delete tensors before clearing to help CUDA memory release
+        for key in list(self.attentions.keys()):
+            tensor = self.attentions.pop(key)
+            del tensor
         self.attentions.clear()
 
 
@@ -175,6 +179,10 @@ class AttentionHookRegistry:
                 
                 # Capture attention weights if available
                 if isinstance(output, tuple) and len(output) > 1 and output[1] is not None:
+                    # Explicitly delete old tensor before replacing to help CUDA memory release
+                    old_attn = capture.attentions.get(layer_idx)
+                    if old_attn is not None:
+                        del old_attn
                     # Store full batch attention (don't move to CPU yet for efficiency)
                     # Shape: (B, n_heads, T0, Ti)
                     capture.attentions[layer_idx] = output[1].detach()
@@ -211,6 +219,7 @@ class AttentionHookRegistry:
             capture = self._requests.pop(request_id, None)
             if capture:
                 capture.clear()
+                del capture
     
     def get_attention_slice(
         self, 
