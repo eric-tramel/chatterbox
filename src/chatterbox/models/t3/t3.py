@@ -461,7 +461,7 @@ class T3(nn.Module):
         # Tail allowance: how many tokens to generate after alignment analyzer detects completion.
         # Lower values reduce trailing noise/whisper artifacts but may clip speech endings.
         # 5 tokens = ~200ms, which is typically enough for natural speech trailing off.
-        tail_allowance = getattr(self.hp, "alignment_tail_allowance", 10)
+        tail_allowance = getattr(self.hp, "alignment_tail_allowance", 15)
         completion_steps: List[Optional[int]] = [None] * base_batch
 
         def _update_completion_states_threadsafe(analyzers_list, steps_list, current_len):
