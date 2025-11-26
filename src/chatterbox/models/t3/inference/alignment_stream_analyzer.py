@@ -70,6 +70,12 @@ class AlignmentStreamAnalyzer:
         self.token_repetition_logged = False
         self.force_eos_logged = False
 
+        # Track the last sequence length to detect stale attention values
+        self._last_seq_len = None
+        
+        # Store hook handles for cleanup
+        self._hook_handles = []
+
         # Using `output_attentions=True` is incompatible with optimized attention kernels, so
         # using it for all layers slows things down too much. We can apply it to just one layer
         # by intercepting the kwargs and adding a forward hook (credit: jrm)
@@ -92,21 +98,56 @@ class AlignmentStreamAnalyzer:
             if isinstance(output, tuple) and len(output) > 1 and output[1] is not None:
                 step_attention = output[1].cpu()  # (B, n_heads, T0, Ti)
                 batch_idx = min(self.batch_index, step_attention.size(0) - 1)
-                self.last_aligned_attns[buffer_idx] = step_attention[batch_idx, head_idx]  # (T0, Ti)
+                attn_slice = step_attention[batch_idx, head_idx]  # (T0, Ti)
+                self.last_aligned_attns[buffer_idx] = attn_slice
+                # Track the sequence length for validation
+                self._last_seq_len = attn_slice.shape[-1]
 
         target_layer = tfmr.layers[layer_idx].self_attn
-        # Register hook and store the handle
-        target_layer.register_forward_hook(attention_forward_hook)
+        # Register hook and store the handle for cleanup
+        handle = target_layer.register_forward_hook(attention_forward_hook)
+        self._hook_handles.append(handle)
         if hasattr(tfmr, 'config') and hasattr(tfmr.config, 'output_attentions'):
             self.original_output_attentions = tfmr.config.output_attentions
             tfmr.config.output_attentions = True
+
+    def remove_hooks(self):
+        """Remove all registered forward hooks to prevent accumulation."""
+        for handle in self._hook_handles:
+            handle.remove()
+        self._hook_handles.clear()
 
     def step(self, logits, next_token=None):
         """
         Emits an AlignmentAnalysisResult into the output queue, and potentially modifies the logits to force an EOS.
         """
+        # Validate that all attention entries exist and have consistent shapes
+        valid_attns = []
+        expected_seq_len = None
+        for idx, attn in enumerate(self.last_aligned_attns):
+            if attn is None:
+                logger.warning(f"Attention entry {idx} is None, skipping alignment analysis")
+                continue
+            seq_len = attn.shape[-1]
+            if expected_seq_len is None:
+                expected_seq_len = seq_len
+            elif seq_len != expected_seq_len:
+                # Mismatched sequence lengths - use only the attention with the expected length
+                # This can happen when hooks from different steps or previous inference calls persist
+                logger.warning(
+                    f"Attention entry {idx} has seq_len {seq_len}, expected {expected_seq_len}. "
+                    f"Skipping mismatched entry."
+                )
+                continue
+            valid_attns.append(attn)
+        
+        if not valid_attns:
+            # No valid attention entries - return logits unchanged
+            logger.warning("No valid attention entries available, skipping alignment analysis")
+            return logits
+        
         # extract approximate alignment matrix chunk (1 frame at a time after the first chunk)
-        aligned_attn = torch.stack(self.last_aligned_attns).mean(dim=0) # (N, N)
+        aligned_attn = torch.stack(valid_attns).mean(dim=0) # (N, N)
         i, j = self.text_tokens_slice
         if self.curr_frame_pos == 0:
             # first chunk has conditioning info, text tokens, and BOS token

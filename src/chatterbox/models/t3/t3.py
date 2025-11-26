@@ -20,6 +20,8 @@ from .modules.t3_config import T3Config
 from .llama_configs import LLAMA_CONFIGS
 from .inference.t3_hf_backend import T3HuggingfaceBackend
 from .inference.alignment_stream_analyzer import AlignmentStreamAnalyzer
+from .inference.attention_hook_registry import AttentionHookRegistry, LLAMA_ALIGNED_HEADS
+from .inference.threadsafe_alignment_analyzer import ThreadSafeAlignmentStreamAnalyzer
 from ..utils import AttrDict
 
 
@@ -69,10 +71,28 @@ class T3(nn.Module):
         self.text_head = nn.Linear(self.cfg.hidden_size, hp.text_tokens_dict_size, bias=False)
         self.speech_head = nn.Linear(self.cfg.hidden_size, hp.speech_tokens_dict_size, bias=False)
         self.compiled = False
+        
+        # Thread-safe attention hook registry (initialized lazily)
+        self._attention_registry: Optional[AttentionHookRegistry] = None
+        # Legacy analyzer instances (for backward compatibility cleanup)
+        self._analyzer_instances = None
 
     @property
     def device(self):
         return self.speech_head.weight.device
+
+    def _ensure_attention_registry(self) -> AttentionHookRegistry:
+        """
+        Lazily initialize and register the thread-safe attention hook registry.
+        
+        This should be called once before the first inference. The registry
+        registers hooks on the transformer layers that persist for the lifetime
+        of the model, enabling thread-safe concurrent inference.
+        """
+        if self._attention_registry is None:
+            self._attention_registry = AttentionHookRegistry()
+            self._attention_registry.register_hooks(self.tfmr)
+        return self._attention_registry
 
     def prepare_conditioning(self, t3_cond: T3Cond):
         """
@@ -350,34 +370,55 @@ class T3(nn.Module):
                 )
 
         self.compiled = False
+        
+        # Set up thread-safe attention registry (hooks registered once, shared across calls)
+        registry = self._ensure_attention_registry()
+        request_id: Optional[str] = None
+        threadsafe_analyzers: List[ThreadSafeAlignmentStreamAnalyzer] = []
+        
+        # Clean up any legacy analyzer instances from previous non-threadsafe calls
+        if self._analyzer_instances is not None:
+            if isinstance(self._analyzer_instances, list):
+                for analyzer in self._analyzer_instances:
+                    if hasattr(analyzer, 'remove_hooks'):
+                        analyzer.remove_hooks()
+            elif hasattr(self._analyzer_instances, 'remove_hooks'):
+                self._analyzer_instances.remove_hooks()
+            self._analyzer_instances = None
+        
+        # For backward compatibility, we still track legacy analyzers
         analyzer_instances: Optional[Union[AlignmentStreamAnalyzer, List[AlignmentStreamAnalyzer]]] = None
+        
         if not self.compiled:
             alignment_stream_analyzer = None
             if self.hp.is_multilingual:
+                # Create a request ID for this inference call (shared by all batch items)
+                request_id = registry.create_request()
+                
                 # Speech starts after cond + full padded text
                 speech_start_idx = len_cond + model_text_tokens.size(1)
                 if debug_batch_logging:
-                    logger.info("[t3-debug] alignment speech_start_idx=%d", speech_start_idx)
+                    logger.info("[t3-debug] alignment speech_start_idx=%d, request_id=%s", speech_start_idx, request_id[:8])
                 
                 text_slice = lambda tl: (len_cond, len_cond + int(tl))
                 repeats = 2 if cfg_enabled else 1
-                analyzers: List[AlignmentStreamAnalyzer] = []
+                
+                # Create thread-safe analyzers (one per batch item)
                 for batch_idx, text_len in enumerate(text_lengths):
                     hf_batch_idx = batch_idx * repeats
-                    analyzer = AlignmentStreamAnalyzer(
-                        self.tfmr,
-                        None,
+                    analyzer = ThreadSafeAlignmentStreamAnalyzer(
+                        registry=registry,
+                        request_id=request_id,
                         text_tokens_slice=text_slice(text_len),
-                        alignment_layer_idx=9,
                         eos_idx=self.hp.stop_speech_token,
                         batch_index=hf_batch_idx,
                         speech_start_idx=speech_start_idx,
                     )
-                    assert analyzer.eos_idx == self.hp.stop_speech_token
-                    analyzers.append(analyzer)
-                if analyzers:
-                    alignment_stream_analyzer = analyzers if base_batch > 1 else analyzers[0]
-                    analyzer_instances = alignment_stream_analyzer
+                    threadsafe_analyzers.append(analyzer)
+                
+                # For backward compatibility with T3HuggingfaceBackend (which expects old-style analyzers)
+                # We pass None and handle alignment in the generation loop instead
+                alignment_stream_analyzer = None
 
             patched_model = T3HuggingfaceBackend(
                 config=self.cfg,
@@ -420,117 +461,148 @@ class T3(nn.Module):
         tail_allowance = getattr(self.hp, "alignment_tail_allowance", 20)
         completion_steps: List[Optional[int]] = [None] * base_batch
 
-        def _update_completion_states(analyzers_obj, steps_list, current_len):
-            if analyzers_obj is None:
-                return
-            if isinstance(analyzers_obj, list):
-                for idx, analyzer in enumerate(analyzers_obj):
-                    if not hasattr(analyzer, "complete"):
-                        continue
-                    if analyzer.complete and steps_list[idx] is None:
-                        steps_list[idx] = current_len
-            else:
-                if hasattr(analyzers_obj, "complete") and analyzers_obj.complete and steps_list[0] is None:
-                    steps_list[0] = current_len
+        def _update_completion_states_threadsafe(analyzers_list, steps_list, current_len):
+            """Update completion states from thread-safe analyzers."""
+            for idx, analyzer in enumerate(analyzers_list):
+                if analyzer.complete and steps_list[idx] is None:
+                    steps_list[idx] = current_len
 
-        output = self.patched_model(
-            inputs_embeds=inputs_embeds,
-            past_key_values=None,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            use_cache=True,
-            output_attentions=True,
-            output_hidden_states=True,
-            return_dict=True,
-        )
-        past = output.past_key_values
+        def _apply_threadsafe_analyzers(logits, analyzers_list, gen_ids, fin_mask):
+            """Apply thread-safe alignment analyzers to logits."""
+            if not analyzers_list:
+                return logits
+            batch_size = logits.size(0)
+            finished_list = fin_mask.tolist() if fin_mask is not None else [False] * batch_size
+            for idx, analyzer in enumerate(analyzers_list):
+                if idx >= batch_size or finished_list[idx]:
+                    continue
+                token = gen_ids[idx, -1] if gen_ids.size(1) > 0 else None
+                logits[idx:idx + 1] = analyzer.step(logits[idx:idx + 1], next_token=token)
+            return logits
 
-        max_steps = max_new_tokens or self.hp.max_speech_tokens
-        for step in tqdm(range(max_steps), desc="Sampling", dynamic_ncols=True):
-            logits_step = output.logits[:, -1, :]
-            if cfg_enabled:
-                cond_logits = logits_step[0::2]
-                uncond_logits = logits_step[1::2]
-                cfg = torch.as_tensor(cfg_weight, device=cond_logits.device, dtype=cond_logits.dtype)
-                logits = cond_logits + cfg * (cond_logits - uncond_logits)
-            else:
-                logits = logits_step
-
-            analyzer = getattr(self.patched_model, "alignment_stream_analyzer", None)
-            logits = self._apply_alignment_stream_analyzers(
-                logits,
-                analyzer,
-                generated_ids,
-                finished_mask=finished,
-            )
-
-            logits = repetition_penalty_processor(generated_ids, logits)
-
-            if finished.any():
-                logits = logits.clone()
-                logits[finished] = float("-inf")
-                # Use a safe large value instead of max float to avoid Inf/NaN in softmax
-                logits[finished, self.hp.stop_speech_token] = 1e5
-
-            if temperature != 1.0:
-                logits = logits / temperature
-            logits = min_p_warper(generated_ids, logits)
-            logits = top_p_warper(generated_ids, logits)
-
-            probs = torch.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-
-            predicted.append(next_token)
-            generated_ids = torch.cat([generated_ids, next_token], dim=1)
-
-            current_len = generated_ids.size(1) - 1  # exclude initial BOS placeholder
-            _update_completion_states(analyzer_instances, completion_steps, current_len)
-
-            tail_force_mask = torch.zeros(base_batch, dtype=torch.bool, device=device)
-            if (
-                tail_allowance is not None
-                and tail_allowance > 0
-                and analyzer_instances is not None
-            ):
-                for idx, step_at in enumerate(completion_steps):
-                    if step_at is None or finished[idx]:
-                        continue
-                    if current_len - step_at >= tail_allowance:
-                        tail_force_mask[idx] = True
-
-            if tail_force_mask.any():
-                generated_ids[tail_force_mask, -1] = self.hp.stop_speech_token
-                predicted[-1][tail_force_mask, 0] = self.hp.stop_speech_token
-
-            finished |= predicted[-1].squeeze(-1).eq(self.hp.stop_speech_token)
-            if torch.all(finished):
-                break
-
-            next_token_embed = self.speech_emb(next_token)
-            next_token_embed = next_token_embed + self.speech_pos_emb.get_fixed_embedding(step + 1)
-            model_next_embed = _cfg_repeat(next_token_embed)
-
-            # update mask for next token
-            step_mask = torch.ones((model_next_embed.size(0), 1), dtype=torch.long, device=device)
-            attention_mask = torch.cat([attention_mask, step_mask], dim=1)
-
-            # update pos_ids for next token
-            next_pos = position_ids[:, -1:] + 1
-            position_ids = torch.cat([position_ids, next_pos], dim=1)
+        # Use request context for thread-safe attention capture
+        # All forward passes within this context will route attention to our request
+        context_manager = registry.request_context(request_id) if request_id else None
+        
+        try:
+            if context_manager:
+                context_manager.__enter__()
             
-            # NOTE: we only pass the *new* position_ids for the current step
-            step_pos_ids = next_pos
-
             output = self.patched_model(
-                inputs_embeds=model_next_embed,
-                past_key_values=past,
+                inputs_embeds=inputs_embeds,
+                past_key_values=None,
                 attention_mask=attention_mask,
-                position_ids=step_pos_ids,
+                position_ids=position_ids,
+                use_cache=True,
                 output_attentions=True,
                 output_hidden_states=True,
                 return_dict=True,
             )
             past = output.past_key_values
+
+            max_steps = max_new_tokens or self.hp.max_speech_tokens
+            for step in tqdm(range(max_steps), desc="Sampling", dynamic_ncols=True):
+                logits_step = output.logits[:, -1, :]
+                if cfg_enabled:
+                    cond_logits = logits_step[0::2]
+                    uncond_logits = logits_step[1::2]
+                    cfg = torch.as_tensor(cfg_weight, device=cond_logits.device, dtype=cond_logits.dtype)
+                    logits = cond_logits + cfg * (cond_logits - uncond_logits)
+                else:
+                    logits = logits_step
+
+                # Apply thread-safe alignment analyzers
+                if threadsafe_analyzers:
+                    logits = _apply_threadsafe_analyzers(
+                        logits,
+                        threadsafe_analyzers,
+                        generated_ids,
+                        finished,
+                    )
+                    # Update completion states BEFORE generating the next token
+                    # This ensures tail_allowance counts tokens generated AFTER completion
+                    _update_completion_states_threadsafe(
+                        threadsafe_analyzers, completion_steps, len(predicted)
+                    )
+                else:
+                    # Fallback to legacy analyzers if no thread-safe ones
+                    analyzer = getattr(self.patched_model, "alignment_stream_analyzer", None)
+                    logits = self._apply_alignment_stream_analyzers(
+                        logits,
+                        analyzer,
+                        generated_ids,
+                        finished_mask=finished,
+                    )
+
+                logits = repetition_penalty_processor(generated_ids, logits)
+
+                if finished.any():
+                    logits = logits.clone()
+                    logits[finished] = float("-inf")
+                    # Use a safe large value instead of max float to avoid Inf/NaN in softmax
+                    logits[finished, self.hp.stop_speech_token] = 1e5
+
+                if temperature != 1.0:
+                    logits = logits / temperature
+                logits = min_p_warper(generated_ids, logits)
+                logits = top_p_warper(generated_ids, logits)
+
+                probs = torch.softmax(logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+
+                predicted.append(next_token)
+                generated_ids = torch.cat([generated_ids, next_token], dim=1)
+
+                # Check tail allowance: count tokens generated AFTER completion
+                tail_force_mask = torch.zeros(base_batch, dtype=torch.bool, device=device)
+                if tail_allowance is not None and tail_allowance > 0 and threadsafe_analyzers:
+                    num_predicted = len(predicted)
+                    for idx, step_at in enumerate(completion_steps):
+                        if step_at is None or finished[idx]:
+                            continue
+                        if num_predicted - step_at >= tail_allowance:
+                            tail_force_mask[idx] = True
+
+                if tail_force_mask.any():
+                    generated_ids[tail_force_mask, -1] = self.hp.stop_speech_token
+                    predicted[-1][tail_force_mask, 0] = self.hp.stop_speech_token
+
+                finished |= predicted[-1].squeeze(-1).eq(self.hp.stop_speech_token)
+                if torch.all(finished):
+                    break
+
+                next_token_embed = self.speech_emb(next_token)
+                next_token_embed = next_token_embed + self.speech_pos_emb.get_fixed_embedding(step + 1)
+                model_next_embed = _cfg_repeat(next_token_embed)
+
+                # update mask for next token
+                step_mask = torch.ones((model_next_embed.size(0), 1), dtype=torch.long, device=device)
+                attention_mask = torch.cat([attention_mask, step_mask], dim=1)
+
+                # update pos_ids for next token
+                next_pos = position_ids[:, -1:] + 1
+                position_ids = torch.cat([position_ids, next_pos], dim=1)
+                
+                # NOTE: we only pass the *new* position_ids for the current step
+                step_pos_ids = next_pos
+
+                output = self.patched_model(
+                    inputs_embeds=model_next_embed,
+                    past_key_values=past,
+                    attention_mask=attention_mask,
+                    position_ids=step_pos_ids,
+                    output_attentions=True,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+                past = output.past_key_values
+
+        finally:
+            # Always clean up the request context and captured attention
+            if context_manager:
+                context_manager.__exit__(None, None, None)
+            if request_id:
+                registry.cleanup_request(request_id)
 
         if predicted:
             predicted_tokens = torch.cat(predicted, dim=1)

@@ -160,13 +160,20 @@ def test_alignment_receives_per_sample_lengths_with_cfg(monkeypatch):
             self.batch_index = batch_index
             self.eos_idx = eos_idx
             self.calls = 0
+            self.complete = False
             Recorder.instances.append(self)
 
         def step(self, logits, next_token=None):
             self.calls += 1
             return logits
 
+    # Patch the ThreadSafeAlignmentStreamAnalyzer (used in new code)
+    monkeypatch.setattr("chatterbox.models.t3.t3.ThreadSafeAlignmentStreamAnalyzer", Recorder)
+    # Also patch the legacy AlignmentStreamAnalyzer for backward compatibility
     monkeypatch.setattr("chatterbox.models.t3.t3.AlignmentStreamAnalyzer", Recorder)
+
+    # Reset instances before test
+    Recorder.instances = []
 
     t3.inference(
         t3_cond=cond,
@@ -210,11 +217,11 @@ def test_tail_allowance_limits_post_completion_tokens(monkeypatch):
             self.complete = True
             return logits
 
-        class FakeBackend:
-            def __init__(self, *_, alignment_stream_analyzer=None, **__):
-                self.alignment_stream_analyzer = alignment_stream_analyzer
-                self.steps = 0
-                self.vocab = t3.hp.speech_tokens_dict_size
+    class FakeBackend:
+        def __init__(self, *_, alignment_stream_analyzer=None, **__):
+            self.alignment_stream_analyzer = alignment_stream_analyzer
+            self.steps = 0
+            self.vocab = t3.hp.speech_tokens_dict_size
 
         def __call__(
             self,
@@ -228,12 +235,12 @@ def test_tail_allowance_limits_post_completion_tokens(monkeypatch):
             return_dict=True,
         ):
             logits = torch.full(
-                    (inputs_embeds.size(0), 1, self.vocab),
+                (inputs_embeds.size(0), 1, self.vocab),
                 -1e9,
                 dtype=inputs_embeds.dtype,
                 device=inputs_embeds.device,
             )
-                token_id = min(10 + self.steps, self.vocab - 1)
+            token_id = min(10 + self.steps, self.vocab - 1)
             logits[..., token_id] = 0.0
             self.steps += 1
             return types.SimpleNamespace(
@@ -241,6 +248,8 @@ def test_tail_allowance_limits_post_completion_tokens(monkeypatch):
                 past_key_values=tuple(),
             )
 
+    # Patch both the new ThreadSafeAlignmentStreamAnalyzer and legacy AlignmentStreamAnalyzer
+    monkeypatch.setattr("chatterbox.models.t3.t3.ThreadSafeAlignmentStreamAnalyzer", AnalyzerStub)
     monkeypatch.setattr("chatterbox.models.t3.t3.AlignmentStreamAnalyzer", AnalyzerStub)
     monkeypatch.setattr("chatterbox.models.t3.t3.T3HuggingfaceBackend", FakeBackend)
 
